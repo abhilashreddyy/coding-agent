@@ -50,7 +50,9 @@ for name in sorted(os.listdir(os.path.join(run, "trials"))):
     trials.append(cut({"name": name, "result": result, "calls": calls, "diff": open(diff_path, errors="replace").read() if os.path.exists(diff_path) else ""}))
 
 experiment = json.load(open(os.path.join(run, "experiment.json"))) if os.path.exists(os.path.join(run, "experiment.json")) else {}
-data = json.dumps({"experiment": experiment, "trials": trials}).replace("</", "<\\/")
+usage_path = os.path.join(run, "usage.json")
+usage = json.load(open(usage_path)) if os.path.exists(usage_path) else None
+data = json.dumps({"experiment": experiment, "trials": trials, "usage": usage}).replace("</", "<\\/")
 
 PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Agent run viewer</title>
@@ -74,11 +76,14 @@ svg{width:100%;height:150px;display:block}.bar{fill:var(--tool);cursor:pointer}.
 pre{background:var(--code);border-radius:8px;padding:8px 10px;margin:4px 0 0;white-space:pre-wrap;word-break:break-word;font:12px/1.45 ui-monospace,Menlo,monospace;max-height:260px;overflow:auto}
 .controls{display:flex;gap:8px;align-items:center;margin:6px 0 10px;flex-wrap:wrap}button,select{font:inherit;padding:5px 12px;border-radius:8px;border:1px solid var(--line);background:var(--code);color:var(--ink);cursor:pointer}
 .add{color:var(--pass)}.del{color:var(--fail)}.hunk{color:var(--tool)}details summary{cursor:pointer;color:var(--mute);margin-top:10px}
+.hud{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:8px;margin:4px 0 12px}.hud div{border:1px solid var(--line);border-radius:8px;padding:6px 10px}.hud b{display:block;font-size:20px;font-variant-numeric:tabular-nums}.hud .hit{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}.hud small{color:var(--mute)}
+.grp td{font-weight:700;color:var(--mute);font-size:12px;text-transform:uppercase}.zero{color:var(--mute)}
 .legend span{margin-right:12px}.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px}
 </style></head><body>
 <header><h1>Agent run viewer</h1><small id="exp"></small></header>
 <main><div><div class="panel"><h2>Scoreboard</h2><div id="board"></div><p class="legend mute"><span><i style="background:var(--pass)"></i>passed</span><span><i style="background:var(--fail)"></i>failed</span><span><i style="background:var(--warn)"></i>hit a limit</span><span><i style="background:#7b8794"></i>crashed</span><br>Click a square to open that trial.</p></div>
-<div class="panel" style="margin-top:16px"><h2>Per level</h2><div id="levels"></div></div></div>
+<div class="panel" style="margin-top:16px"><h2>Per level</h2><div id="levels"></div></div>
+<div class="panel" style="margin-top:16px"><h2>How often each part fired (all trials)</h2><div id="usage"></div></div></div>
 <div class="panel" id="detail"><p class="mute">Pick a trial on the left.</p></div></main>
 <script>
 const DATA = __DATA__;
@@ -96,7 +101,18 @@ function board() {
   for (const tag of tags) { const r = T.filter(t => t.result.tag === tag).map(t => t.result), n = r.length, s = k => r.reduce((a, x) => a + (x[k] || 0), 0);
     l += `<tr><td>${esc(tag)}</td><td>${r.filter(x => x.passed).length}/${n}</td><td>${(s('steps') / n).toFixed(1)}</td><td>$${(s('cost') / n).toFixed(4)}</td><td>${Math.max(0, ...r.map(x => x.peak_context || 0)).toLocaleString()}</td><td>${r.filter(x => x.crash).length}</td><td>${r.filter(x => x.injected).length}</td><td>${r.filter(x => x.cheated).length}</td></tr>`; }
   document.getElementById('levels').innerHTML = l + '</table>';
+  const U = DATA.usage; if (U) { let u = '<table><tr><th>What happened</th>' + U.levels.map(x => `<th>${esc(x.replace('level-', 'L').split('-')[0])}</th>`).join('') + '</tr>', g = '';
+    for (const row of U.rows) { if (row.group !== g) { g = row.group; u += `<tr class="grp"><td colspan="${U.levels.length + 1}">${esc(g)}</td></tr>`; } u += `<tr><td>${esc(row.label)}</td>` + row.values.map(v => `<td class="${v ? '' : 'zero'}">${v.toLocaleString()}</td>`).join('') + '</tr>'; }
+    document.getElementById('usage').innerHTML = u + '</table>'; }
 }
+// what each event means for the harness, so the counters can tick during playback
+function flags(s) { const f = {}; if (s.head) { if (s.call > 0 && s.c.incoming.some(m => m.blocks.some(b => (b.text || '').includes('<progress_notes>')))) f.compactions = 1; return f; }
+  const b = s.b, t = b.text || '';
+  if (s.who === 'tool_use') { f.tools = 1; if (b.name === 'spawn_agent') f.helpers = 1; }
+  if (s.who === 'tool_result') { if (t.includes('characters cut. Narrow the command')) f.clipped = 1; if (t.includes('made this exact call')) f.repeats = 1;
+    if (t.startsWith('Blocked by policy') || t.startsWith('Not allowed:')) f.refused = 1; else if (t.includes('ran for more than 60 seconds')) f.timeouts = 1; else if (b.is_error) f.errors = 1; }
+  return f; }
+const HUD = [['tools', 'Tool calls'], ['clipped', 'Output cut short'], ['errors', 'Errors handed back'], ['timeouts', 'Commands killed'], ['repeats', 'Repeat warnings'], ['refused', 'Commands refused'], ['compactions', 'Compactions'], ['helpers', 'Helpers started']];
 function steps(t) { const out = []; t.calls.forEach((c, n) => { out.push({call: n, head: true, c}); c.incoming.forEach(m => m.blocks.forEach(b => out.push({call: n, who: b.type === 'tool_result' ? 'tool_result' : 'user', b}))); c.reply.forEach(b => out.push({call: n, who: b.type === 'tool_use' ? 'tool_use' : 'model', b})); }); return out; }
 function render() {
   const t = T[sel], r = t.result, S = steps(t), lim = e.context_limit || 0, max = Math.max(lim, ...t.calls.map(c => c.input_tokens), 1), W = 1000, bw = Math.max(4, Math.min(40, W / Math.max(1, t.calls.length) - 3));
@@ -107,6 +123,9 @@ function render() {
   <div class="chips">${[['Stopped', r.crash ? 'crash' : r.stopped], ['Tool calls', r.steps], ['Model calls', r.calls ?? t.calls.length], ['Tokens in', (r.input_tokens || 0).toLocaleString()], ['Tokens out', (r.output_tokens || 0).toLocaleString()], ['Peak context', (r.peak_context || 0).toLocaleString()], ['Cost', '$' + (r.cost || 0).toFixed(4)], ['Time', (r.seconds || 0) + ' s'], ['Compactions', r.compactions || 0]].map(([k, v]) => `<div class="chip"><small>${k}</small><b>${esc(v ?? '–')}</b></div>`).join('')}</div>
   ${r.crash ? `<pre>${esc(r.crash)}</pre>` : ''}
   <h2>Context sent with each model call ${lim ? '<small>(dashed line: the pretend window)</small>' : ''}</h2>${svg}
+  <h2>Harness activity so far</h2><div class="hud">${(() => { const tot = {}, now = cur ? flags(cur) : {}; S.slice(0, Math.min(shown, S.length)).forEach(x => { const f = flags(x); for (const k in f) tot[k] = (tot[k] || 0) + 1; });
+    const spent = t.calls.slice(0, curCall + 1).reduce((a, c) => a + (c.cost || 0), 0), ctx = curCall >= 0 ? t.calls[curCall].input_tokens : 0;
+    return HUD.map(([k, label]) => `<div class="${now[k] ? 'hit' : ''}"><small>${label}</small><b>${tot[k] || 0}</b></div>`).join('') + `<div><small>Context now</small><b>${ctx.toLocaleString()}</b></div><div><small>Spent so far</small><b>$${spent.toFixed(4)}</b></div>`; })()}</div>
   <div class="controls"><button onclick="play()">${timer ? 'Pause' : 'Play'}</button><button onclick="show(1)">Restart</button><button onclick="show(shown - 1)">Back</button><button onclick="show(Math.min(shown, ${S.length}) + 1)">Next</button><button onclick="show(1e9)">Show all</button>
   <select id="speed"><option value="1200">slow</option><option value="600" selected>normal</option><option value="200">fast</option></select><span class="mute">${Math.min(shown, S.length)} of ${S.length} events</span></div><div id="steps">`;
   S.forEach((s, i) => { const hid = i >= shown ? ' hidden' : '', now = i === Math.min(shown, S.length) - 1 && shown < 1e9 ? ' current' : '';

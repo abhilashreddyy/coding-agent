@@ -121,5 +121,6 @@ total = sum(r.get("cost", 0) for r in results)
 table = "\n".join(rows) + f"\n\nTotal: ${total:.3f} for {len(results)} trials in {time.time() - started:.0f} s. Model {a.model}{' (FAKE)' if a.fake else ''}, {a.trials} trials per task, pretend context window {a.context_limit:,} tokens.\n"
 open(os.path.join(outdir, "table.md"), "w").write(table)
 print("\n" + table + f"\nSaved to {outdir}")
+subprocess.run([sys.executable, os.path.join(HERE, "usage.py"), outdir], stdout=subprocess.DEVNULL)
 subprocess.run([sys.executable, os.path.join(HERE, "viewer.py"), outdir])
 shutil.rmtree(exp, ignore_errors=True)
