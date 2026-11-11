@@ -6,3 +6,4 @@ Each tag adds one idea to the same small agent. `evals/` scores every tag on the
 |---|---|
 | `level-0-chat` | A chat loop. It cannot see files. |
 | `level-1-loop` | The agent loop and one shell tool. |
+| `level-2-tools` | Read, list, edit and write tools; long output is clipped. |

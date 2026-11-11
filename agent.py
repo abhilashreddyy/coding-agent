@@ -1,25 +1,95 @@
-"""Level 1: the agent loop. The model asks for a shell command, we run it, we send back
-what it printed, and we repeat until the model stops asking. This loop never changes again."""
+"""Level 2: real tools. Reading, listing and editing files get their own tools with clear
+descriptions, long outputs are clipped, and every path is resolved against the project folder."""
 import os, subprocess, sys
 from model import Meter, ask
 
-# A pretend context window, so a short demo can hit the limit a real one hits after hours.
-CONTEXT_LIMIT = int(os.environ.get("AGENT_CONTEXT_LIMIT", "0"))  # tokens; 0 = no limit
-
-TOOLS = [{
-    "name": "shell",
-    "description": "Run a shell command in the project folder and return what it printed.",
-    "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
-}]
+CONTEXT_LIMIT = int(os.environ.get("AGENT_CONTEXT_LIMIT", "0"))  # pretend context window, in tokens; 0 = none
+MAX_OUTPUT = 6000  # characters of tool output the model gets to see
 
 
-def shell(command, workdir):
+def clip(text):
+    """One huge output can fill the whole context. Keep the start and the end, say what was cut."""
+    if len(text) <= MAX_OUTPUT:
+        return text
+    half = MAX_OUTPUT // 2
+    return f"{text[:half]}\n... [{len(text) - MAX_OUTPUT} characters cut. Narrow the command (grep, head, a line range) to see more.] ...\n{text[-half:]}"
+
+
+def path_in(workdir, path):
+    return path if os.path.isabs(path) else os.path.join(workdir, path)
+
+
+def shell(workdir, command):
     done = subprocess.run(command, shell=True, cwd=workdir, capture_output=True, text=True, timeout=60)
     return done.stdout + done.stderr
 
 
+def read_file(workdir, path, start_line=1, end_line=None):
+    lines = open(path_in(workdir, path)).read().splitlines()
+    chosen = lines[start_line - 1:end_line]
+    return "\n".join(f"{n}\t{line}" for n, line in enumerate(chosen, start_line))
+
+
+def list_files(workdir, path="."):
+    found = []
+    for root, dirs, files in os.walk(path_in(workdir, path)):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+        found += [os.path.relpath(os.path.join(root, f), workdir) for f in files]
+    return "\n".join(sorted(found))
+
+
+def edit_file(workdir, path, old_str, new_str):
+    full = path_in(workdir, path)
+    text = open(full).read()
+    if text.count(old_str) != 1:
+        return f"Not edited: old_str appears {text.count(old_str)} times in {path}. It must appear exactly once; include more surrounding lines."
+    open(full, "w").write(text.replace(old_str, new_str))
+    return f"Edited {path}."
+
+
+def write_file(workdir, path, content):
+    full = path_in(workdir, path)
+    os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
+    open(full, "w").write(content)
+    return f"Wrote {path} ({len(content)} characters)."
+
+
+def tool(fn, description, **params):
+    """Describe a Python function to the model. `params` maps a name to (type, description, required)."""
+    props = {k: {"type": t, "description": d} for k, (t, d, _) in params.items()}
+    return {"fn": fn, "spec": {"name": fn.__name__, "description": description,
+                               "input_schema": {"type": "object", "properties": props, "required": [k for k, v in params.items() if v[2]]}}}
+
+
+REGISTRY = [
+    tool(shell, "Run a shell command in the project folder and return its output (stdout then stderr). "
+         "Use it to run tests and programs and to search with grep. Output longer than 6,000 characters is cut in the middle, "
+         "so filter large files with grep, head, tail or wc instead of printing them whole. Each command starts in the project folder.",
+         command=("string", "The command line to run.", True)),
+    tool(read_file, "Read a text file and return its lines, each prefixed with its line number. "
+         "Use start_line and end_line to read part of a long file. Prefer this over `cat` so you can refer to line numbers when editing.",
+         path=("string", "File path, relative to the project folder.", True),
+         start_line=("integer", "First line to return, counting from 1.", False),
+         end_line=("integer", "Last line to return.", False)),
+    tool(list_files, "List every file under a folder, one path per line, relative to the project folder. "
+         "Hidden folders are skipped. Use it first to learn the layout of a project.",
+         path=("string", "Folder to list. Defaults to the project folder.", False)),
+    tool(edit_file, "Replace one exact piece of text in a file with new text. old_str must match the file exactly, "
+         "including spaces and line breaks, and must appear exactly once; if it does not, nothing changes and you are told why. "
+         "Read the file first so you copy the text exactly.",
+         path=("string", "File path, relative to the project folder.", True),
+         old_str=("string", "The exact text to replace.", True),
+         new_str=("string", "The text to put in its place.", True)),
+    tool(write_file, "Create a file, or replace its whole contents. Use edit_file for a small change to an existing file.",
+         path=("string", "File path, relative to the project folder.", True),
+         content=("string", "The full new contents.", True)),
+]
+TOOLS = [t["spec"] for t in REGISTRY]
+FUNCTIONS = {t["spec"]["name"]: t["fn"] for t in REGISTRY}
+
+
 def run_tool(name, args, workdir):
-    return shell(args["command"], workdir)
+    return clip(FUNCTIONS[name](workdir, **args))
 
 
 def run_task(prompt, workdir="."):
