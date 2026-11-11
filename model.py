@@ -35,9 +35,13 @@ class Meter:
         self.peak_context = max(self.peak_context, usage.input_tokens)
         step = (usage.input_tokens * i + usage.output_tokens * o) / 1e6
         self.cost += step
-        if LEDGER:
-            total = (json.load(open(LEDGER))["usd"] if os.path.exists(LEDGER) else 0.0) + step
-            json.dump({"usd": total}, open(LEDGER, "w"))
+        if LEDGER:  # several runs share this file, so lock it while we add to it
+            import fcntl
+            with open(LEDGER, "a+") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                f.seek(0)
+                total = float(f.read() or 0) + step
+                f.seek(0); f.truncate(); f.write(repr(total))
             if total > TOTAL_CAP:
                 raise BudgetExceeded(f"experiment cap ${TOTAL_CAP} reached")
         if self.cost > RUN_CAP:
@@ -49,6 +53,8 @@ _client = None
 
 def ask(messages, meter, system=None, tools=None):
     """One request to the model. The API is stateless: we send the whole history every time."""
+    if LEDGER and os.path.exists(LEDGER) and float(open(LEDGER).read() or 0) > TOTAL_CAP:
+        raise BudgetExceeded(f"experiment cap ${TOTAL_CAP} reached")
     if os.environ.get("AGENT_FAKE"):
         response = _fake(messages, tools)
     else:
