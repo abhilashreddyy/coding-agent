@@ -10,3 +10,4 @@ Each tag adds one idea to the same small agent. `evals/` scores every tag on the
 | `level-3-guardrails` | Errors go back to the model; step and cost limits; a system prompt. |
 | `level-4-permissions` | Allow, deny or ask before every tool call. |
 | `level-5-context` | Compacts a long history into a progress note and a notes file. |
+| `level-6-subagents` | Helper agents with a fresh history that return only an answer. |

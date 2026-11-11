@@ -1,6 +1,5 @@
-"""Level 5: context management. The history grows with every tool call and is resent every time.
-When it passes a threshold, the agent writes itself a short progress note, saves it to a notes
-file, and starts a fresh conversation from the task plus that note."""
+"""Level 6: sub-agents. The agent can hand a self-contained job to a copy of itself that starts
+with an empty history. The copy does the reading; only its final answer comes back."""
 import os, re, signal, subprocess, sys
 from model import Meter, ask
 
@@ -161,6 +160,12 @@ REGISTRY = [
          path=("string", "File path, relative to the project folder.", True),
          content=("string", "The full new contents.", True)),
 ]
+SPAWN = {"name": "spawn_agent", "description":
+         "Give a self-contained job to a helper agent that starts with no memory of this conversation and has the same file and shell tools. "
+         "Only its final written answer comes back to you. Use it for work that needs a lot of reading but a short answer, such as surveying many files. "
+         "The helper knows nothing you do not write in the prompt: state the goal, what to look at, and exactly what to report back.",
+         "input_schema": {"type": "object", "properties": {"prompt": {"type": "string", "description": "Complete instructions for the helper."}}, "required": ["prompt"]}}
+DELEGATE = "\nYour own context is limited. When a job needs a lot of reading (many files, long files or logs), hand the reading to spawn_agent with precise instructions and keep only its findings."
 TOOLS = [t["spec"] for t in REGISTRY]
 FUNCTIONS = {t["spec"]["name"]: t["fn"] for t in REGISTRY}
 
@@ -178,11 +183,13 @@ def run_tool(name, args, workdir):
         return f"Error: {type(e).__name__}: {e}. Check the name and arguments, then try a different approach.", True
 
 
-def run_task(prompt, workdir="."):
-    meter, steps, seen, compactions = Meter(), 0, {}, 0
-    messages = [{"role": "user", "content": first_message(prompt, load_notes(workdir))}]
+def run_task(prompt, workdir=".", meter=None, helper=False):
+    """`helper=True` is a sub-agent: same loop, fresh history, shared bill, and it cannot spawn helpers of its own."""
+    meter, steps, seen, compactions = meter or Meter(), 0, {}, 0
+    tools = TOOLS if helper else TOOLS + [SPAWN]
+    messages = [{"role": "user", "content": first_message(prompt, "" if helper else load_notes(workdir))}]
     while True:
-        response = ask(messages, meter, system=SYSTEM, tools=TOOLS)
+        response = ask(messages, meter, system=SYSTEM if helper else SYSTEM + DELEGATE, tools=tools)
         messages.append({"role": "assistant", "content": response.content})  # keep every block, unchanged
         if response.stop_reason != "tool_use":
             break
@@ -194,7 +201,12 @@ def run_task(prompt, workdir="."):
         for block in response.content:
             if block.type == "tool_use":
                 steps += 1
-                output, failed = run_tool(block.name, block.input, workdir)
+                if block.name == "spawn_agent":
+                    child = run_task(block.input["prompt"], workdir, meter, helper=True)
+                    steps += child["steps"]
+                    output, failed = child["final_text"] or f"The helper stopped without an answer ({child['stopped']}).", False
+                else:
+                    output, failed = run_tool(block.name, block.input, workdir)
                 key = (block.name, repr(sorted(block.input.items())))
                 seen[key] = seen.get(key, 0) + 1
                 if seen[key] >= 3:
