@@ -11,3 +11,4 @@ Each tag adds one idea to the same small agent. `evals/` scores every tag on the
 | `level-4-permissions` | Allow, deny or ask before every tool call. |
 | `level-5-context` | Compacts a long history into a progress note and a notes file. |
 | `level-6-subagents` | Helper agents with a fresh history that return only an answer. |
+| `level-7-scoreboard` | The eval harness that scores every tag. |
