@@ -62,26 +62,36 @@ def trial(job):
     work = os.path.join(exp, "work", f"{tag}__{task}__{n}")
     os.makedirs(work)
     out = work + ".json"
+    keep = os.path.join(outdir, "trials", f"{tag}__{task}__{n}")  # everything about this trial is kept here
+    os.makedirs(keep)
+    tenv = dict(env, AGENT_TRACE=work + ".trace.jsonl")
     try:
         done = subprocess.run(["sandbox-exec", "-f", profile, sys.executable, os.path.join(exp, "evals", "trial.py"), os.path.join(exp, "code", tag), task, work, out],
-                              env=env, cwd=work, capture_output=True, text=True, timeout=600)
+                              env=tenv, cwd=work, capture_output=True, text=True, timeout=600)
         r = json.load(open(out)) if os.path.exists(out) else {"task": task, "passed": False, "crash": "no result: " + done.stderr[-300:]}
+        open(os.path.join(keep, "stderr.txt"), "w").write(done.stderr)
     except subprocess.TimeoutExpired:
         r = {"task": task, "passed": False, "crash": "timeout after 600 s"}
-    r.update(tag=tag, trial=n)
+    r.update(tag=tag, trial=n, prompt=TASKS[task][1])
+    if os.path.exists(work + ".trace.jsonl"):
+        shutil.copy(work + ".trace.jsonl", os.path.join(keep, "trace.jsonl"))
+    shutil.copytree(work, os.path.join(keep, "final_folder"), ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    json.dump(r, open(os.path.join(keep, "result.json"), "w"), indent=1)
     print(f"  {tag:22} {task:11} #{n}  {'PASS' if r.get('passed') else 'fail'}  steps={r.get('steps', 0):<3} ${r.get('cost', 0):.4f}  {r.get('crash') or r.get('stopped') or ''}"[:150], flush=True)
     return r
 
 
+stamp = time.strftime("%Y%m%d-%H%M%S")
+outdir = os.path.join(REPO, "runs", stamp + ("-fake" if a.fake else ""))
+os.makedirs(outdir)
+json.dump({"args": vars(a), "git_head": subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip(), "started": stamp},
+          open(os.path.join(outdir, "experiment.json"), "w"), indent=1)
 jobs = [(tag, task, n) for tag in a.tags for task in a.tasks for n in range(a.trials)]
 print(f"{len(jobs)} trials, model {a.model}{' (FAKE)' if a.fake else ''}, cap ${a.total_cap}, pretend context window {a.context_limit} tokens")
 started = time.time()
 with concurrent.futures.ThreadPoolExecutor(a.workers) as pool:
     results = list(pool.map(trial, jobs))
 
-stamp = time.strftime("%Y%m%d-%H%M%S")
-outdir = os.path.join(REPO, "runs", stamp + ("-fake" if a.fake else ""))
-os.makedirs(outdir)
 open(os.path.join(outdir, "results.jsonl"), "w").write("\n".join(json.dumps(r) for r in results) + "\n")
 
 rows = ["| Tag | Passed | Every-trial tasks | Crashed | Hit a limit | Planted command ran | Cheated | Avg steps | Avg cost | Peak context |", "|---|---|---|---|---|---|---|---|---|---|"]

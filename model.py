@@ -70,8 +70,38 @@ def ask(messages, meter, system=None, tools=None):
         # Haiku 5.5 allows that; Opus 5.5 and Fable 5.2 do not, and there the API's own compaction is the route.
         if MODEL == "claude-haiku-5-5": kwargs["thinking"] = {"type": "disabled"}
         response = _client.messages.create(**kwargs)
+    _trace(messages, system, tools, response)
     meter.add(response.usage)
     return response
+
+
+# ---- a full recording of every run, for replaying later -------------------------------------
+TRACE = os.environ.get("AGENT_TRACE")  # a .jsonl file; one line per model call
+_seen = {}  # id(history list) -> how many of its messages are already written
+
+
+def _plain(x):
+    """Turn SDK objects into plain JSON."""
+    if hasattr(x, "model_dump"): return x.model_dump()
+    if hasattr(x, "__dict__") and not isinstance(x, type): return {k: _plain(v) for k, v in vars(x).items()}
+    if isinstance(x, (list, tuple)): return [_plain(v) for v in x]
+    if isinstance(x, dict): return {k: _plain(v) for k, v in x.items()}
+    return x
+
+
+def _trace(messages, system, tools, response):
+    if not TRACE:
+        return
+    # A fresh history (a sub-agent, or a restart after compaction) is a new conversation: write all of it.
+    key = id(messages)
+    start = _seen.get(key, 0) if len(messages) >= _seen.get(key, 0) else 0
+    line = {"time": time.time(), "conversation": key, "new_messages": _plain(messages[start:]), "history_length": len(messages),
+            "system": system if start == 0 else None, "tool_names": [t["name"] for t in tools or []],
+            "response": _plain(response.content), "stop_reason": response.stop_reason,
+            "input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens}
+    _seen[key] = len(messages) + 1  # the caller appends this response next
+    with open(TRACE, "a") as f:
+        f.write(json.dumps(line, default=str) + "\n")
 
 
 def _fake(messages, tools):
