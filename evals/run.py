@@ -6,7 +6,7 @@
 Each trial runs in its own empty folder inside a sandbox that cannot write to your home folder,
 cannot read key files, and can only open HTTPS connections.
 """
-import argparse, concurrent.futures, json, os, shutil, subprocess, sys, tempfile, time
+import argparse, concurrent.futures, json, os, shutil, signal, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -23,6 +23,7 @@ p.add_argument("--context-limit", type=int, default=20000, help="pretend context
 p.add_argument("--total-cap", type=float, default=3.0, help="stop the whole experiment at this many dollars")
 p.add_argument("--run-cap", type=float, default=0.25, help="no single trial may cost more than this")
 p.add_argument("--workers", type=int, default=4)
+p.add_argument("--trial-timeout", type=int, default=300, help="seconds before a stuck trial is killed")
 p.add_argument("--fake", action="store_true")
 a = p.parse_args()
 
@@ -66,12 +67,20 @@ def trial(job):
     os.makedirs(keep)
     tenv = dict(env, AGENT_TRACE=work + ".trace.jsonl")
     try:
-        done = subprocess.run(["sandbox-exec", "-f", profile, sys.executable, os.path.join(exp, "evals", "trial.py"), os.path.join(exp, "code", tag), task, work, out],
-                              env=tenv, cwd=work, capture_output=True, text=True, timeout=600)
-        r = json.load(open(out)) if os.path.exists(out) else {"task": task, "passed": False, "crash": "no result: " + done.stderr[-300:]}
-        open(os.path.join(keep, "stderr.txt"), "w").write(done.stderr)
-    except subprocess.TimeoutExpired:
-        r = {"task": task, "passed": False, "crash": "timeout after 600 s"}
+        errfile = open(os.path.join(keep, "stderr.txt"), "w")
+        proc = subprocess.Popen(["sandbox-exec", "-f", profile, sys.executable, os.path.join(exp, "evals", "trial.py"), os.path.join(exp, "code", tag), task, work, out],
+                                env=tenv, cwd=work, stdout=subprocess.DEVNULL, stderr=errfile, start_new_session=True)
+        try:
+            proc.wait(timeout=a.trial_timeout)
+            r = json.load(open(out)) if os.path.exists(out) else {"task": task, "passed": False, "crash": "no result (see stderr.txt)"}
+        except subprocess.TimeoutExpired:
+            r = {"task": task, "passed": False, "crash": f"hung: killed after {a.trial_timeout} s"}
+        finally:  # kill the trial and anything it left running
+            try: os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            errfile.close()
+    except Exception as e:
+        r = {"task": task, "passed": False, "crash": f"runner error: {e}"}
     r.update(tag=tag, trial=n, prompt=TASKS[task][1])
     if os.path.exists(work + ".trace.jsonl"):
         shutil.copy(work + ".trace.jsonl", os.path.join(keep, "trace.jsonl"))
@@ -99,14 +108,14 @@ with concurrent.futures.ThreadPoolExecutor(a.workers) as pool:
 
 open(os.path.join(outdir, "results.jsonl"), "w").write("\n".join(json.dumps(r) for r in results) + "\n")
 
-rows = ["| Tag | Passed | Every-trial tasks | Crashed | Hit a limit | Planted command ran | Cheated | Avg steps | Avg cost | Peak context |", "|---|---|---|---|---|---|---|---|---|---|"]
+rows = ["| Tag | Passed | Every-trial tasks | Crashed | Hit a limit | Planted command ran | Cheated or destroyed | Avg steps | Avg cost | Peak context |", "|---|---|---|---|---|---|---|---|---|---|"]
 for tag in a.tags:
     rs = [r for r in results if r["tag"] == tag]
     by_task = {t: [r for r in rs if r["task"] == t] for t in a.tasks}
     solid = sum(all(r.get("passed") for r in v) for v in by_task.values())
     limits = sum(r.get("stopped") in ("context_overflow", "step_limit", "budget") for r in rs)
     rows.append(f"| {tag} | {sum(bool(r.get('passed')) for r in rs)}/{len(rs)} | {solid}/{len(a.tasks)} | {sum(bool(r.get('crash')) for r in rs)} | {limits} | "
-                f"{sum(bool(r.get('injected')) for r in rs)} | {sum(bool(r.get('cheated')) for r in rs)} | {sum(r.get('steps', 0) for r in rs) / len(rs):.1f} | "
+                f"{sum(bool(r.get('injected')) for r in rs)} | {sum(bool(r.get('cheated') or r.get('destroyed')) for r in rs)} | {sum(r.get('steps', 0) for r in rs) / len(rs):.1f} | "
                 f"${sum(r.get('cost', 0) for r in rs) / len(rs):.4f} | {max((r.get('peak_context', 0) for r in rs), default=0):,} |")
 total = sum(r.get("cost", 0) for r in results)
 table = "\n".join(rows) + f"\n\nTotal: ${total:.3f} for {len(results)} trials in {time.time() - started:.0f} s. Model {a.model}{' (FAKE)' if a.fake else ''}, {a.trials} trials per task, pretend context window {a.context_limit:,} tokens.\n"
