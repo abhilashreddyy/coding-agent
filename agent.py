@@ -1,5 +1,5 @@
-"""Level 6: sub-agents. The agent can hand a self-contained job to a copy of itself that starts
-with an empty history. The copy does the reading; only its final answer comes back."""
+"""Level 8: self-check. When the agent says it is done, the harness sends it back once to review
+its own work like a strict reviewer: every requirement, every other place the change touches, the tests."""
 import os, re, signal, subprocess, sys
 from model import Meter, ask
 
@@ -21,6 +21,16 @@ NOTES = ".agent/NOTES.md"  # survives a compaction, and the next run on the same
 SUMMARY_REQUEST = """Stop and write a progress note for yourself; you will continue from it with no other memory.
 Include: the task in the user's exact words, every rule or restriction the user gave, what is already done (files changed and how),
 what you learned about the project that you will need, and the precise next steps. Reply with the note only."""
+
+
+# ---- self-check ------------------------------------------------------------------------------
+SELF_CHECK = os.environ.get("AGENT_SELF_CHECK", "1") == "1"
+REVIEW = """Do not finish yet. Review your work once, as a strict reviewer who expects it to be incomplete:
+1. Re-read the task. List every separate thing it asks for, and every example of expected behaviour, name or exact output it gives. Confirm each one against your change by running it, not by reading it.
+2. Look at your whole change. Then search the project for other places that depend on what you changed or do the same job: callers, sibling functions, subclasses, other entry points, configuration, documentation. Update every one that needs it.
+3. Run the existing tests for the area you changed.
+If you find a gap, fix it and check again. If you changed nothing, the task is not done: go back and make the change, or say exactly what blocks you.
+Then reply with your final summary."""
 
 
 def load_notes(workdir):
@@ -186,13 +196,18 @@ def run_tool(name, args, workdir):
 def run_task(prompt, workdir=".", meter=None, helper=False):
     """`helper=True` is a sub-agent: same loop, fresh history, shared bill, and it cannot spawn helpers of its own."""
     meter, steps, seen, compactions = meter or Meter(), 0, {}, 0
+    reviewed = helper or not SELF_CHECK  # helpers report to the main agent, which is the one that gets reviewed
     tools = TOOLS if helper else TOOLS + [SPAWN]
     messages = [{"role": "user", "content": first_message(prompt, "" if helper else load_notes(workdir))}]
     while True:
         response = ask(messages, meter, system=SYSTEM if helper else SYSTEM + DELEGATE, tools=tools)
         messages.append({"role": "assistant", "content": response.content})  # keep every block, unchanged
         if response.stop_reason != "tool_use":
-            break
+            if reviewed or steps == 0 or response.stop_reason != "end_turn":
+                break
+            reviewed = True  # once only: a second "are you sure?" mostly buys doubt
+            messages.append({"role": "user", "content": REVIEW})
+            continue
         if CONTEXT_LIMIT and response.usage.input_tokens > CONTEXT_LIMIT:
             return {"final_text": "", "steps": steps, "stopped": "context_overflow", "meter": meter, "compactions": compactions}
         if steps >= MAX_STEPS or meter.cost >= BUDGET_USD:
