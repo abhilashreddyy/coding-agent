@@ -10,7 +10,7 @@ run = sys.argv[1].rstrip("/")
 ROWS = [  # (group, label, key)
     ("Tools", "Tool calls", "tool_calls"), ("Tools", "- shell", "tool:shell"), ("Tools", "- read_file", "tool:read_file"), ("Tools", "- list_files", "tool:list_files"),
     ("Tools", "- edit_file", "tool:edit_file"), ("Tools", "- write_file", "tool:write_file"), ("Tools", "Long output cut short", "clipped"), ("Tools", "Edit refused (text not found once)", "edit_refused"),
-    ("Guardrails", "Tool error handed back to the model", "errors"), ("Guardrails", "Command killed after 60 s", "timeouts"), ("Guardrails", "Repeated-call warning", "repeats"), ("Guardrails", "Sent back to check its own work", "self_checks"),
+    ("Guardrails", "Tool error handed back to the model", "errors"), ("Guardrails", "Command killed after 60 s", "timeouts"), ("Guardrails", "Repeated-call warning", "repeats"), ("Guardrails", "Sent back to check its own work", "self_checks"), ("Guardrails", "Reviewed by a second agent", "reviews"),
     ("Guardrails", "Run stopped by step limit", "stop:step_limit"), ("Guardrails", "Run stopped by cost limit", "stop:budget"), ("Guardrails", "Run crashed or hung (no guardrail caught it)", "crashes"),
     ("Permissions", "Commands checked", "checked"), ("Permissions", "Refused: forbidden pattern", "denied_pattern"), ("Permissions", "Refused: program not approved", "denied_program"), ("Permissions", "Refused: outside the project", "denied_path"),
     ("Context", "History compacted", "compactions"), ("Context", "Run started from saved notes", "notes_loaded"), ("Context", "Run stopped: context full", "stop:context_overflow"),
@@ -39,6 +39,7 @@ for name in sorted(os.listdir(os.path.join(run, "trials"))):
                 if b.get("type") == "text" and "<progress_notes>" in text and line["history_length"] == 1 and c is not None:
                     c["notes_loaded"] += 1
                 if b.get("type") == "text" and text.startswith("Do not finish yet. Review your work"): c["self_checks"] += 1
+                if b.get("type") == "text" and text.startswith("Before you finish: a reviewer who"): c["reviews"] += 1
                 if b.get("type") != "tool_result":
                     continue
                 if "characters cut. Narrow the command" in text: c["clipped"] += 1

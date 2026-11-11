@@ -1,5 +1,5 @@
-"""Level 8: self-check. When the agent says it is done, the harness sends it back once to review
-its own work like a strict reviewer: every requirement, every other place the change touches, the tests."""
+"""Level 9: a reviewer with fresh eyes. When the agent says it is done, a second agent that has not seen
+any of its reasoning checks the change against the task, and its report goes back to the first agent once."""
 import os, re, signal, subprocess, sys
 from model import Meter, ask
 
@@ -23,14 +23,40 @@ Include: the task in the user's exact words, every rule or restriction the user 
 what you learned about the project that you will need, and the precise next steps. Reply with the note only."""
 
 
-# ---- self-check ------------------------------------------------------------------------------
-SELF_CHECK = os.environ.get("AGENT_SELF_CHECK", "1") == "1"
-REVIEW = """Do not finish yet. Review your work once, as a strict reviewer who expects it to be incomplete:
-1. Re-read the task. List every separate thing it asks for, and every example of expected behaviour, name or exact output it gives. Confirm each one against your change by running it, not by reading it.
-2. Look at your whole change. Then search the project for other places that depend on what you changed or do the same job: callers, sibling functions, subclasses, other entry points, configuration, documentation. Update every one that needs it.
-3. Run the existing tests for the area you changed.
-If you find a gap, fix it and check again. If you changed nothing, the task is not done: go back and make the change, or say exactly what blocks you.
-Then reply with your final summary."""
+# ---- review ----------------------------------------------------------------------------------
+REVIEW = os.environ.get("AGENT_REVIEW", "1") == "1"
+REVIEWER = """You are reviewing a change another engineer made for the task below. You did not write it and you have not seen their reasoning.
+Assume the change is incomplete or wrong until you have shown otherwise. Do not edit the project's files; for experiments use `python -c` or a file under /tmp.
+
+<task>
+{task}
+</task>
+
+<change>
+{change}
+</change>
+
+1. From the task alone, write down what a correct solution must do: each separate requirement, and any exact name, message, output or format the task or the project's existing conventions call for.
+2. Search the project for every place that has to change for that (callers, sibling functions, subclasses, other entry points, configuration, documentation). Name any the change missed.
+3. Exercise the behaviour the task describes against the current code, and run the existing tests for the area. Read the results.
+
+Reply with one line, `VERDICT: complete` or `VERDICT: incomplete`, then a numbered list of concrete gaps: the file, what is wrong or missing, and the command and output that show it. List only gaps you have evidence for."""
+REVIEWED = """Before you finish: a reviewer who has not seen your reasoning examined your change against the task. Their report:
+
+<review>
+{report}
+</review>
+
+Check each point yourself. Fix the ones that are real, re-run your checks, and then reply with your final summary. Say which points you did not act on and why."""
+
+
+def changes(workdir):
+    """What the agent changed so far, for the reviewer. Empty if the folder is not a git repository."""
+    try:
+        run = lambda c: subprocess.run(c, shell=True, cwd=workdir, capture_output=True, text=True, timeout=30).stdout
+        return clip((run("git status --short") + "\n" + run("git diff HEAD")).strip())
+    except Exception:
+        return ""
 
 
 def load_notes(workdir):
@@ -196,7 +222,7 @@ def run_tool(name, args, workdir):
 def run_task(prompt, workdir=".", meter=None, helper=False):
     """`helper=True` is a sub-agent: same loop, fresh history, shared bill, and it cannot spawn helpers of its own."""
     meter, steps, seen, compactions = meter or Meter(), 0, {}, 0
-    reviewed = helper or not SELF_CHECK  # helpers report to the main agent, which is the one that gets reviewed
+    reviewed = helper or not REVIEW  # only the main agent's work gets reviewed
     tools = TOOLS if helper else TOOLS + [SPAWN]
     messages = [{"role": "user", "content": first_message(prompt, "" if helper else load_notes(workdir))}]
     while True:
@@ -205,8 +231,10 @@ def run_task(prompt, workdir=".", meter=None, helper=False):
         if response.stop_reason != "tool_use":
             if reviewed or steps == 0 or response.stop_reason != "end_turn":
                 break
-            reviewed = True  # once only: a second "are you sure?" mostly buys doubt
-            messages.append({"role": "user", "content": REVIEW})
+            reviewed = True  # once only
+            child = run_task(REVIEWER.format(task=prompt, change=changes(workdir) or "(no diff available: inspect the folder)"), workdir, meter, helper=True)
+            steps += child["steps"]
+            messages.append({"role": "user", "content": REVIEWED.format(report=child["final_text"] or f"The reviewer stopped without a report ({child['stopped']}).")})
             continue
         if CONTEXT_LIMIT and response.usage.input_tokens > CONTEXT_LIMIT:
             return {"final_text": "", "steps": steps, "stopped": "context_overflow", "meter": meter, "compactions": compactions}
