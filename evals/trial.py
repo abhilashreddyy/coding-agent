@@ -9,6 +9,8 @@ from tasks import TASKS
 
 setup, prompt, check = TASKS[task_name]
 state = setup(workdir)
+import shutil
+shutil.copytree(workdir, workdir + ".start")  # the project before the agent touched it
 result = {"task": task_name, "crash": None, "stopped": None, "steps": 0, "final_text": ""}
 started = time.time()
 meter = None
@@ -21,6 +23,7 @@ except BaseException as e:  # a crash is a result too
     result["crash"] = f"{type(e).__name__}: {str(e)[:300]}"
     result["trace"] = traceback.format_exc()[-1500:]
     meter = next((v for v in (getattr(e, "meter", None),) if v), None)
+shutil.copytree(workdir, workdir + ".end", ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))  # before the checker adds its own files
 try:
     passed, extra = check(workdir, state, result["final_text"])
 except Exception as e:

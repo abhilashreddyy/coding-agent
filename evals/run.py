@@ -75,7 +75,12 @@ def trial(job):
     r.update(tag=tag, trial=n, prompt=TASKS[task][1])
     if os.path.exists(work + ".trace.jsonl"):
         shutil.copy(work + ".trace.jsonl", os.path.join(keep, "trace.jsonl"))
-    shutil.copytree(work, os.path.join(keep, "final_folder"), ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    for suffix, name in ((".start", "start_folder"), (".end", "final_folder")):
+        if os.path.exists(work + suffix):
+            shutil.copytree(work + suffix, os.path.join(keep, name), ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    if os.path.exists(work + ".start") and os.path.exists(work + ".end"):  # what the agent changed, as a diff
+        d = subprocess.run(["diff", "-ruN", "-x", "__pycache__", "-x", ".pytest_cache", "start_folder", "final_folder"], cwd=keep, capture_output=True, text=True, errors="replace")
+        open(os.path.join(keep, "changes.diff"), "w").write(d.stdout)
     json.dump(r, open(os.path.join(keep, "result.json"), "w"), indent=1)
     print(f"  {tag:22} {task:11} #{n}  {'PASS' if r.get('passed') else 'fail'}  steps={r.get('steps', 0):<3} ${r.get('cost', 0):.4f}  {r.get('crash') or r.get('stopped') or ''}"[:150], flush=True)
     return r
@@ -107,4 +112,5 @@ total = sum(r.get("cost", 0) for r in results)
 table = "\n".join(rows) + f"\n\nTotal: ${total:.3f} for {len(results)} trials in {time.time() - started:.0f} s. Model {a.model}{' (FAKE)' if a.fake else ''}, {a.trials} trials per task, pretend context window {a.context_limit:,} tokens.\n"
 open(os.path.join(outdir, "table.md"), "w").write(table)
 print("\n" + table + f"\nSaved to {outdir}")
+subprocess.run([sys.executable, os.path.join(HERE, "viewer.py"), outdir])
 shutil.rmtree(exp, ignore_errors=True)

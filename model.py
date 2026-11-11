@@ -55,6 +55,7 @@ def ask(messages, meter, system=None, tools=None):
     """One request to the model. The API is stateless: we send the whole history every time."""
     if LEDGER and os.path.exists(LEDGER) and float(open(LEDGER).read() or 0) > TOTAL_CAP:
         raise BudgetExceeded(f"experiment cap ${TOTAL_CAP} reached")
+    began = time.time()
     if os.environ.get("AGENT_FAKE"):
         response = _fake(messages, tools)
     else:
@@ -70,7 +71,7 @@ def ask(messages, meter, system=None, tools=None):
         # Haiku 5.5 allows that; Opus 5.5 and Fable 5.2 do not, and there the API's own compaction is the route.
         if MODEL == "claude-haiku-5-5": kwargs["thinking"] = {"type": "disabled"}
         response = _client.messages.create(**kwargs)
-    _trace(messages, system, tools, response)
+    _trace(messages, system, tools, response, began)
     meter.add(response.usage)
     return response
 
@@ -89,13 +90,15 @@ def _plain(x):
     return x
 
 
-def _trace(messages, system, tools, response):
+def _trace(messages, system, tools, response, began):
     if not TRACE:
         return
     # A fresh history (a sub-agent, or a restart after compaction) is a new conversation: write all of it.
     key = id(messages)
     start = _seen.get(key, 0) if len(messages) >= _seen.get(key, 0) else 0
-    line = {"time": time.time(), "conversation": key, "new_messages": _plain(messages[start:]), "history_length": len(messages),
+    i, o = PRICES[MODEL]
+    line = {"time": time.time(), "model_seconds": round(time.time() - began, 2), "model": MODEL, "conversation": key,
+            "cost": (response.usage.input_tokens * i + response.usage.output_tokens * o) / 1e6, "new_messages": _plain(messages[start:]), "history_length": len(messages),
             "system": system if start == 0 else None, "tool_names": [t["name"] for t in tools or []],
             "response": _plain(response.content), "stop_reason": response.stop_reason,
             "input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens}
