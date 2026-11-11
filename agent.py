@@ -1,10 +1,19 @@
-"""Level 2: real tools. Reading, listing and editing files get their own tools with clear
-descriptions, long outputs are clipped, and every path is resolved against the project folder."""
-import os, subprocess, sys
+"""Level 3: guardrails. A failing tool no longer kills the run (the error goes back to the model),
+there is a ceiling on steps and on money, a repeated call is called out, and a short system
+prompt says what "done" means."""
+import os, signal, subprocess, sys
 from model import Meter, ask
 
 CONTEXT_LIMIT = int(os.environ.get("AGENT_CONTEXT_LIMIT", "0"))  # pretend context window, in tokens; 0 = none
 MAX_OUTPUT = 6000  # characters of tool output the model gets to see
+MAX_STEPS = int(os.environ.get("AGENT_MAX_STEPS", "40"))  # tool calls allowed in one task
+BUDGET_USD = float(os.environ.get("AGENT_BUDGET_USD", "0.15"))  # money allowed for one task
+
+SYSTEM = """You are a coding agent working in a project folder through tools.
+Work in small steps: look before you change anything, and prefer the file tools to shell commands for reading and editing.
+Before you say a task is done, check it: run the tests or the program and read the result.
+If the task cannot be done as asked, stop and say exactly why. Never change tests, expected results or the task's own rules to make a check pass.
+When you finish, reply with a short summary of what you changed and how you checked it."""
 
 
 def clip(text):
@@ -20,8 +29,13 @@ def path_in(workdir, path):
 
 
 def shell(workdir, command):
-    done = subprocess.run(command, shell=True, cwd=workdir, capture_output=True, text=True, timeout=60)
-    return done.stdout + done.stderr
+    proc = subprocess.Popen(command, shell=True, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    try:
+        return proc.communicate(timeout=60)[0]
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)  # stop the command and everything it started, or it runs on forever
+        proc.communicate()
+        raise
 
 
 def read_file(workdir, path, start_line=1, end_line=None):
@@ -89,25 +103,37 @@ FUNCTIONS = {t["spec"]["name"]: t["fn"] for t in REGISTRY}
 
 
 def run_tool(name, args, workdir):
-    return clip(FUNCTIONS[name](workdir, **args))
+    """Returns (output, is_error). A tool that blows up becomes a message the model can act on."""
+    try:
+        return clip(FUNCTIONS[name](workdir, **args)), False
+    except subprocess.TimeoutExpired:
+        return "Error: the command ran for more than 60 seconds and was stopped. Run something shorter, or in the background.", True
+    except Exception as e:
+        return f"Error: {type(e).__name__}: {e}. Check the name and arguments, then try a different approach.", True
 
 
 def run_task(prompt, workdir="."):
-    meter, steps = Meter(), 0
+    meter, steps, seen = Meter(), 0, {}
     messages = [{"role": "user", "content": prompt}]
     while True:
-        response = ask(messages, meter, tools=TOOLS)
+        response = ask(messages, meter, system=SYSTEM, tools=TOOLS)
         messages.append({"role": "assistant", "content": response.content})  # keep every block, unchanged
         if response.stop_reason != "tool_use":
             break
         if CONTEXT_LIMIT and response.usage.input_tokens > CONTEXT_LIMIT:
             return {"final_text": "", "steps": steps, "stopped": "context_overflow", "meter": meter}
+        if steps >= MAX_STEPS or meter.cost >= BUDGET_USD:
+            return {"final_text": "", "steps": steps, "stopped": "step_limit" if steps >= MAX_STEPS else "budget", "meter": meter}
         results = []
         for block in response.content:
             if block.type == "tool_use":
                 steps += 1
-                output = run_tool(block.name, block.input, workdir)
-                results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
+                output, failed = run_tool(block.name, block.input, workdir)
+                key = (block.name, repr(sorted(block.input.items())))
+                seen[key] = seen.get(key, 0) + 1
+                if seen[key] >= 3:
+                    output += f"\n[You have made this exact call {seen[key]} times. Repeating it will not change the result; try something else or stop and report.]"
+                results.append({"type": "tool_result", "tool_use_id": block.id, "content": output, "is_error": failed})
         messages.append({"role": "user", "content": results})  # all results together, in one message
     text = "".join(b.text for b in response.content if b.type == "text")
     return {"final_text": text, "steps": steps, "stopped": response.stop_reason, "meter": meter}
