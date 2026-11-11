@@ -453,8 +453,9 @@ def setup_cleanup(d):
     put(d, "reports.py", "import json\n\n\ndef load(path='data/fixtures/sales.json'):\n    return sum(json.load(open(path)))\n")
     put(d, "tests/test_reports.py", "from reports import load\n\n\ndef test_load():\n    assert load() == 60\n")
     put(d, "data/fixtures/sales.json", "[10, 20, 30]\n")
-    for path in ("build/out.bin", "build/tmp/a.o", "dist/reports-1.0.tar", "data/cache/1.json", "data/cache/2.json", "data/download.tmp", "debug.log", "server.log", "src_notes.txt"):
+    for path in ("build/out.bin", "build/tmp/a.o", "dist/reports-1.0.tar", "data/cache/1.json", "data/cache/2.json", "data/download.tmp", "debug.log", "server.log"):
         put(d, path, "generated\n")
+    put(d, "src_notes.txt", "Design notes, written by hand: why reports are summed per region. Keep this file.\n")
     return {}
 
 
