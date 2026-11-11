@@ -1,0 +1,5 @@
+{"note": "10 SWE-rebench tasks whose images are already on the PC and whose real fix passes the grader. Difficulty is from earlier Gemma-agent runs: easy = solved 3 of 3, medium = 1 or 2 of 3, hard = 0 of 3.",
+ "easy": ["hynek__svcs-140", "milvus-io__pymilvus-3273", "BerriAI__litellm-16997", "a2aproject__a2a-python-682_interface"],
+ "medium": ["gidgethub__gidgethub-225", "prometheus__client_python-1134", "deltares__hydrolib-core-1049_interface"],
+ "hard": ["holoviz__param-1073", "jsonpickle__jsonpickle-588", "fabfuel__circuitbreaker-67"],
+ "ids": ["hynek__svcs-140", "milvus-io__pymilvus-3273", "BerriAI__litellm-16997", "a2aproject__a2a-python-682_interface", "gidgethub__gidgethub-225", "prometheus__client_python-1134", "deltares__hydrolib-core-1049_interface", "holoviz__param-1073", "jsonpickle__jsonpickle-588", "fabfuel__circuitbreaker-67"]}
