@@ -18,3 +18,8 @@ Each tag adds one idea to the same small agent. `evals/` scores every tag on the
 Every trial is recorded under `runs/<date-time>/trials/<level>__<task>__<trial>/`: the full trace of model calls and tool results,
 the project before and after, a diff, and the result. `runs/<date-time>/viewer.html` is a page for browsing all of it;
 `python evals/replay.py <trial folder>` prints one trial in the terminal.
+
+### In a standard trace viewer
+
+The same recordings can be sent to any OpenTelemetry trace viewer. With Arize Phoenix running locally (`python -m phoenix.server.main serve`):
+`python evals/export_otel.py runs/<date-time>` then open http://127.0.0.1:6006. Each level becomes a project; each trial is one trace.
