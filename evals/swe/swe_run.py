@@ -39,15 +39,24 @@ p.add_argument("--total-cap", type=float, default=3.0)
 p.add_argument("--agent-timeout", type=int, default=1500)
 p.add_argument("--gold", action="store_true")
 p.add_argument("--empty", action="store_true")
+p.add_argument("--regrade", help="a finished run folder: grade its saved patches again, without running the agent (no model cost)")
 a = p.parse_args()
 ids = json.load(open(a.ids))
 ids = ids["ids"] if isinstance(ids, dict) else ids
-level = "gold" if a.gold else "empty" if a.empty else a.tag
+level = "gold" if a.gold else "empty" if a.empty else "regrade" if a.regrade else a.tag
 outdir = os.path.join(REPO, "runs", time.strftime("%Y%m%d-%H%M%S") + f"-{a.name}")
 os.makedirs(os.path.join(outdir, "trials"))
 json.dump({"args": vars(a), "started": os.path.basename(outdir), "benchmark": "nebius/SWE-rebench"}, open(os.path.join(outdir, "experiment.json"), "w"), indent=1)
 shared = tempfile.mkdtemp(prefix="a7c-")  # ledger shared by all containers
 os.chmod(shared, 0o777)
+
+
+def text_only(patch):
+    """Drop binary files from a patch. An agent's crashed experiment can leave a core dump in the folder; `git apply`
+    rejects the whole patch because of it, and a correct fix is then graded as no change at all."""
+    parts = re.split(r"(?m)^(?=diff --git )", patch)
+    kept = [x for x in parts if "\nGIT binary patch\n" not in x and not re.search(r"(?m)^Binary files .* differ$", x)]
+    return "".join(kept), len(parts) - len(kept)
 
 
 def sh(args, timeout=600, **kw):
@@ -145,8 +154,11 @@ def one(job):
     result = {"task": iid, "tag": level, "trial": n, "prompt": meta["problem_statement"][:6000], "repo": meta.get("repo"), "gold_patch_chars": len(meta["patch"]),
               "crash": None, "stopped": None, "steps": 0, "cost": 0.0}
     patch = meta["patch"] if a.gold else ""
+    if a.regrade:
+        import glob
+        patch = open(glob.glob(os.path.join(a.regrade, "trials", f"*__{iid}__{n}", "changes.diff"))[0]).read()
     try:
-        if not (a.gold or a.empty):
+        if not (a.gold or a.empty or a.regrade):
             work = os.path.join(shared, f"{iid}__{n}")
             os.makedirs(work)
             os.chmod(work, 0o777)
@@ -172,6 +184,7 @@ def one(job):
                 patch = d.stdout
             finally:
                 sh(["docker", "kill", cid])
+        patch, result["binary_files_dropped"] = text_only(patch)
         open(os.path.join(keep, "changes.diff"), "w").write(patch)
         open(os.path.join(keep, "gold.diff"), "w").write(meta["patch"])
         result["patch_chars"] = len(patch)
