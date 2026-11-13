@@ -1,5 +1,20 @@
 # A coding agent in 7 commits, measured at every one
 
+## Try it: the chat page
+
+```
+uv venv && uv pip install anthropic        # once
+echo "ANTHROPIC_API_KEY=sk-..." > .env     # once
+.venv/bin/python chat.py                   # then open http://localhost:8765
+```
+
+Type a task and press Run. The page shows every step live: what the agent is about to do, each tool call
+(find files, search, read, edit, write, run command) with its result, permission questions, and the final answer
+with steps, cost and time. The agent works in `workspace/expense-tracker` (change the folder in the box).
+The default task builds an expense tracker; start it afterwards with `python3 expense_tracker.py` in that folder.
+
+From a terminal instead: `.venv/bin/python agent.py "your task"` in the project folder.
+
 Each tag adds one idea to the same small agent. `evals/` scores every tag on the same tasks.
 
 | Tag | Adds |
