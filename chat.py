@@ -155,7 +155,7 @@ button.ghost{background:#eee9df;color:var(--ink)}button:disabled{opacity:.45;cur
 <div class="meta"><span>model <b>__MODEL__</b></span><span>steps <b id="steps">0</b></span><span>cost <b id="cost">$0.000</b></span><span>time <b id="time">0s</b></span></div></div></header>
 <main id="log"><div class="empty" id="empty"><h1>What should I build?</h1>I work in the project folder below and show every step.</div></main>
 <footer><div class="composer"><div class="box">
-<textarea id="task" placeholder="Describe the task…">Build a small expense tracker as a web app in this folder. One Python file serves it with only the standard library and stores data in a JSON file. The page lets me add an expense (amount, category, note), lists all expenses, and shows the total per category. Add a few tests and run them. Tell me the command to start it.</textarea>
+<textarea id="task" placeholder="Describe the task…">Build a small expense tracker as a web app in this folder. One Python file serves it with only the standard library and stores data in a JSON file. The page lets me add an expense (amount, category, note), lists all expenses, and shows the total per category. Add a few tests and run them. When everything works, start the app and give me the local URL to open it.</textarea>
 <div class="row"><input id="folder" value="__FOLDER__" title="Project folder"><button id="go">Run</button></div></div></div></footer>
 <script>
 const $ = s => document.querySelector(s), log = $("#log");
@@ -171,7 +171,7 @@ function setRunning(on){ running = on; $("#go").disabled = on; if (on){ started 
 function handle(e){
   $("#empty")?.remove(); meta(e);
   const h = e.helper ? " helper" : "";
-  if (e.kind === "user"){ add(esc(e.text), "user"); setRunning(true); }
+  if (e.kind === "user"){ add(esc(e.text), "user"); setRunning(true); if (Date.now()/1000 - e.time < 5) $("#task").value = ""; }
   else if (e.kind === "think") add(md(e.text), "think" + h);
   else if (e.kind === "tool"){
     const [label, ico] = LABEL[e.name] || [e.name, "•"];

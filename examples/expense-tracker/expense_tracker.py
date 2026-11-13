@@ -1,22 +1,20 @@
-"""A small expense tracker web app using only the Python standard library.
+#!/usr/bin/env python3
+"""Small expense tracker web app using only the Python standard library.
 
-Run:  python expense_tracker.py [port]
-Then open http://localhost:8000 in a browser.
+Data is stored in expenses.json next to this file.
+Run with: python3 expense_tracker.py [port]
 """
-
 import json
 import os
 import sys
 import threading
-from html import escape
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import urlparse
 
-DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "expenses.json")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(BASE_DIR, "expenses.json")
 _lock = threading.Lock()
 
-
-# ---------- storage ----------
 
 def load_expenses(path=DATA_FILE):
     if not os.path.exists(path):
@@ -32,25 +30,29 @@ def save_expenses(expenses, path=DATA_FILE):
     os.replace(tmp, path)
 
 
-def add_expense(amount, category, note, path=DATA_FILE):
-    """Validate and store one expense. Raises ValueError on bad input."""
+def validate_expense(data):
+    """Return (clean_expense, error_message). error_message is None when valid."""
     try:
-        amount = round(float(amount), 2)
+        amount = float(data.get("amount"))
     except (TypeError, ValueError):
-        raise ValueError("Amount must be a number.")
-    if amount <= 0:
-        raise ValueError("Amount must be greater than zero.")
-    category = (category or "").strip()
+        return None, "Amount must be a number."
+    if amount != amount or amount in (float("inf"), float("-inf")) or amount <= 0:
+        return None, "Amount must be a positive number."
+    category = str(data.get("category", "")).strip()
     if not category:
-        raise ValueError("Category is required.")
-    note = (note or "").strip()
+        return None, "Category is required."
+    note = str(data.get("note", "")).strip()
+    return {"amount": round(amount, 2), "category": category, "note": note}, None
+
+
+def add_expense(expense, path=DATA_FILE):
     with _lock:
         expenses = load_expenses(path)
-        next_id = max((e["id"] for e in expenses), default=0) + 1
-        expense = {"id": next_id, "amount": amount, "category": category, "note": note}
+        expense = dict(expense)
+        expense["id"] = max((e.get("id", 0) for e in expenses), default=0) + 1
         expenses.append(expense)
         save_expenses(expenses, path)
-    return expense
+        return expense
 
 
 def totals_by_category(expenses):
@@ -60,109 +62,149 @@ def totals_by_category(expenses):
     return dict(sorted(totals.items()))
 
 
-# ---------- HTML ----------
-
-def render_page(expenses, error=""):
-    rows = "\n".join(
-        f"<tr><td>{escape(str(e['id']))}</td><td>{e['amount']:.2f}</td>"
-        f"<td>{escape(e['category'])}</td><td>{escape(e['note'])}</td></tr>"
-        for e in expenses
-    ) or '<tr><td colspan="4">No expenses yet.</td></tr>'
-    totals = totals_by_category(expenses)
-    total_rows = "\n".join(
-        f"<tr><td>{escape(c)}</td><td>{t:.2f}</td></tr>" for c, t in totals.items()
-    ) or '<tr><td colspan="2">No data.</td></tr>'
-    grand = sum(e["amount"] for e in expenses)
-    err_html = f'<p class="error">{escape(error)}</p>' if error else ""
-    return f"""<!DOCTYPE html>
+PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>Expense Tracker</title>
 <style>
-body {{ font-family: sans-serif; max-width: 800px; margin: 2em auto; padding: 0 1em; }}
-table {{ border-collapse: collapse; width: 100%; margin-bottom: 2em; }}
-th, td {{ border: 1px solid #ccc; padding: 0.4em; text-align: left; }}
-th {{ background: #f0f0f0; }}
-.error {{ color: #b00020; }}
+body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+h1 { margin-bottom: .2rem; }
+fieldset { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem; }
+input { padding: .4rem; margin: .2rem .4rem .2rem 0; }
+button { padding: .4rem 1rem; }
+table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
+th, td { text-align: left; padding: .4rem; border-bottom: 1px solid #eee; }
+td.num, th.num { text-align: right; }
+#error { color: #b00020; min-height: 1.2rem; }
 </style>
 </head>
 <body>
 <h1>Expense Tracker</h1>
-{err_html}
-<h2>Add expense</h2>
-<form method="post" action="/add">
-  <label>Amount <input name="amount" type="number" step="0.01" min="0.01" required></label>
-  <label>Category <input name="category" required></label>
-  <label>Note <input name="note"></label>
-  <button type="submit">Add</button>
+
+<fieldset>
+<legend>Add expense</legend>
+<form id="form">
+<input id="amount" type="number" step="0.01" min="0.01" placeholder="Amount" required>
+<input id="category" type="text" placeholder="Category" required>
+<input id="note" type="text" placeholder="Note (optional)">
+<button type="submit">Add</button>
 </form>
-<h2>Totals per category</h2>
+<div id="error"></div>
+</fieldset>
+
+<h2>Totals by category</h2>
 <table>
-<tr><th>Category</th><th>Total</th></tr>
-{total_rows}
-<tr><th>All categories</th><th>{grand:.2f}</th></tr>
+<thead><tr><th>Category</th><th class="num">Total</th></tr></thead>
+<tbody id="totals"></tbody>
 </table>
+
 <h2>All expenses</h2>
 <table>
-<tr><th>ID</th><th>Amount</th><th>Category</th><th>Note</th></tr>
-{rows}
+<thead><tr><th>Category</th><th class="num">Amount</th><th>Note</th></tr></thead>
+<tbody id="expenses"></tbody>
 </table>
+
+<script>
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function refresh() {
+  const res = await fetch('/api/expenses');
+  const data = await res.json();
+  document.getElementById('totals').innerHTML = Object.entries(data.totals)
+    .map(([c, t]) => `<tr><td>${esc(c)}</td><td class="num">${t.toFixed(2)}</td></tr>`).join('')
+    || '<tr><td colspan="2">No expenses yet.</td></tr>';
+  document.getElementById('expenses').innerHTML = data.expenses.slice().reverse()
+    .map(e => `<tr><td>${esc(e.category)}</td><td class="num">${e.amount.toFixed(2)}</td><td>${esc(e.note)}</td></tr>`).join('')
+    || '<tr><td colspan="3">No expenses yet.</td></tr>';
+}
+document.getElementById('form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const body = {
+    amount: document.getElementById('amount').value,
+    category: document.getElementById('category').value,
+    note: document.getElementById('note').value,
+  };
+  const res = await fetch('/api/expenses', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+  const err = document.getElementById('error');
+  if (!res.ok) {
+    err.textContent = (await res.json()).error || 'Could not add expense.';
+    return;
+  }
+  err.textContent = '';
+  ev.target.reset();
+  document.getElementById('category').focus();
+  refresh();
+});
+refresh();
+</script>
 </body>
 </html>
 """
 
 
-# ---------- HTTP ----------
-
 class Handler(BaseHTTPRequestHandler):
-    data_path = DATA_FILE
+    data_file = DATA_FILE
 
-    def _send(self, status, body, ctype="text/html; charset=utf-8", headers=None):
-        data = body.encode("utf-8")
+    def _send_json(self, status, payload):
+        body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        for k, v in (headers or {}).items():
-            self.send_header(k, v)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(body)
 
     def do_GET(self):
-        if self.path.split("?")[0] != "/":
-            self._send(404, "Not found", "text/plain; charset=utf-8")
-            return
-        expenses = load_expenses(self.data_path)
-        self._send(200, render_page(expenses))
+        path = urlparse(self.path).path
+        if path == "/":
+            body = PAGE.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif path == "/api/expenses":
+            with _lock:
+                expenses = load_expenses(self.data_file)
+            self._send_json(200, {"expenses": expenses, "totals": totals_by_category(expenses)})
+        else:
+            self._send_json(404, {"error": "Not found."})
 
     def do_POST(self):
-        if self.path != "/add":
-            self._send(404, "Not found", "text/plain; charset=utf-8")
+        if urlparse(self.path).path != "/api/expenses":
+            self._send_json(404, {"error": "Not found."})
             return
-        length = int(self.headers.get("Content-Length", 0))
-        form = parse_qs(self.rfile.read(length).decode("utf-8"))
-        get = lambda k: form.get(k, [""])[0]
         try:
-            add_expense(get("amount"), get("category"), get("note"), self.data_path)
-        except ValueError as exc:
-            expenses = load_expenses(self.data_path)
-            self._send(400, render_page(expenses, str(exc)))
+            length = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(data, dict):
+                raise ValueError
+        except (ValueError, json.JSONDecodeError):
+            self._send_json(400, {"error": "Invalid JSON body."})
             return
-        self._send(303, "", headers={"Location": "/"})
+        expense, error = validate_expense(data)
+        if error:
+            self._send_json(400, {"error": error})
+            return
+        saved = add_expense(expense, self.data_file)
+        self._send_json(201, saved)
 
     def log_message(self, fmt, *args):
         pass
 
 
-def make_server(port=8000, data_path=DATA_FILE):
-    handler = type("BoundHandler", (Handler,), {"data_path": data_path})
+def make_server(port=8000, data_file=DATA_FILE):
+    handler = type("BoundHandler", (Handler,), {"data_file": data_file})
     return HTTPServer(("127.0.0.1", port), handler)
 
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     server = make_server(port)
-    print(f"Expense tracker running at http://localhost:{port}  (Ctrl+C to stop)")
+    print(f"Expense tracker running at http://127.0.0.1:{port}/  (Ctrl+C to stop)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
