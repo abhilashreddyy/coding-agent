@@ -15,6 +15,9 @@ The default task builds an expense tracker; start it afterwards with `python3 ex
 
 From a terminal instead: `.venv/bin/python agent.py "your task"` in the project folder.
 
+`examples/expense-tracker/` is an app the agent built from that default task, unedited: one standard-library
+Python file and its tests. Run it with `python3 expense_tracker.py` and open http://localhost:8000.
+
 Each tag adds one idea to the same small agent. `evals/` scores every tag on the same tasks.
 
 | Tag | Adds |

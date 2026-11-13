@@ -204,5 +204,9 @@ $("#task").addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKe
 </script></body></html>"""
 
 if __name__ == "__main__":
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"Coding agent chat on http://localhost:{PORT}  (project folder: {FOLDER})")
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
