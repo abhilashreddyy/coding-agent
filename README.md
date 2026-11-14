@@ -4,7 +4,7 @@
 
 ```
 uv venv && uv pip install anthropic        # once
-echo "ANTHROPIC_API_KEY=sk-..." > .env     # once
+cp .env.example .env                     # once, then put your API key in it
 .venv/bin/python chat.py                   # then open http://localhost:8765
 ```
 
